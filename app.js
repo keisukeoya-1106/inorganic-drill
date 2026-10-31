@@ -100,6 +100,19 @@
     return n;
   }
 
+  // ---------- 使い始めの日 ----------
+  // この端末で初めて開いた日。これより前の日には戻れない。保存がない端末では、記録の最も古い日を使う。
+  const START_KEY = "inorg.start.v1";
+  const START = (() => {
+    let s = null;
+    try { s = localStorage.getItem(START_KEY); } catch (e) { /* 読めなくても動作は続ける */ }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s || "")) {
+      s = [TODAY].concat(Object.keys(snaps), Object.keys(progress)).filter(k => /^\d{4}-\d{2}-\d{2}$/.test(k)).sort()[0];
+      try { localStorage.setItem(START_KEY, s); } catch (e) { /* 保存できなくても動作は続ける */ }
+    }
+    return s <= TODAY ? s : TODAY;
+  })();
+
   // ---------- 復習リスト ----------
   // 間違えた問題(「答えを見る」を含む)を問題IDで保存する。2回連続で正解したら外す。間違えると連続回数は0に戻る。
   const REVIEW_KEY = "inorg.review.v1";
@@ -169,6 +182,7 @@
     const prev = el("button", { class: "iconbtn", "aria-label": "前の日" }, "‹");
     const next = el("button", { class: "iconbtn", "aria-label": "次の日" }, "›");
     next.disabled = viewDate >= TODAY;
+    prev.disabled = viewDate <= START;
     prev.addEventListener("click", () => { viewDate = addDays(viewDate, -1); showList(); });
     next.addEventListener("click", () => { viewDate = addDays(viewDate, 1); showList(); });
     const mid = el("div", { class: "date" }, `${dateLabel(viewDate)}<small>${viewDate === TODAY ? "TODAY" : "REVIEW"}</small>`);
