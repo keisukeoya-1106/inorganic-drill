@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>無機化学ドリル</title>
+<meta name="apple-mobile-web-app-title" content="無機化学ドリル">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="icon" type="image/svg+xml" href="icon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="style.css?v=20261031e">
+<!-- 更新して公開するときは、下の ?v= の値(日付+英字)を3つとも新しくする(端末に残った古い版を使わせないため) -->
+<script defer src="bank.js?v=20261031e"></script>
+<script defer src="app.js?v=20261031e"></script>
+</head>
+<body>
+<header class="site-header">
+  <div class="header-inner">
+    <div class="header-row">
+      <h1>無機化学ドリル<small>INORGANIC CHEMISTRY</small></h1>
+      <span id="summary"></span>
+    </div>
+    <div class="bar" aria-hidden="true"><i id="bar-fill"></i></div>
+  </div>
+</header>
+<main id="app"></main>
+<nav class="bottom-nav" id="bottom-nav" hidden></nav>
+</body>
+</html>
