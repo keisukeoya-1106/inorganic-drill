@@ -8,8 +8,9 @@
   BANK.forEach(p => { BY_ID[p.id] = p; });
   const UNIT_LABEL = {};
   UNITS.forEach(u => { UNIT_LABEL[u.key] = u.label; });
-  const N = UNITS.length; // 1日の問題数(分野ごとに1題)
-  const KEY = "inorg.v1";
+  const TYPE_LABEL = { choice: "4択", color: "色", fill: "入力" };
+  const TEST_PER_UNIT = 2; // ランダムテストは、各分野からこの数ずつ出す
+  const TEST_N = UNITS.length * TEST_PER_UNIT;
   const WD = ["日", "月", "火", "水", "木", "金", "土"];
 
   // 色の選択肢に添える色見本
@@ -25,10 +26,8 @@
   const pad = n => String(n).padStart(2, "0");
   const fmt = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   const parseDate = s => { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); };
-  const addDays = (s, n) => { const d = parseDate(s); d.setDate(d.getDate() + n); return fmt(d); };
   const qd = new URLSearchParams(location.search).get("date"); // ?date=YYYY-MM-DD で「今日」を差し替え(動作確認用)
   const TODAY = qd && /^\d{4}-\d{2}-\d{2}$/.test(qd) ? qd : fmt(new Date());
-  let viewDate = TODAY;
   const dateLabel = s => { const d = parseDate(s); return `${d.getMonth() + 1}月${d.getDate()}日(${WD[d.getDay()]})`; };
 
   const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -38,8 +37,6 @@
     if (html !== undefined) e.innerHTML = html;
     return e;
   }
-
-  // ---------- 出題(日付から決まる周回順列。分野ごとに1題) ----------
   function rng(seed) { // mulberry32
     let a = seed >>> 0;
     return () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
@@ -50,82 +47,42 @@
     for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(r() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
     return a;
   }
-  const EPOCH = new Date(2026, 0, 1);
-  const dayIndex = s => Math.round((parseDate(s) - EPOCH) / 86400000);
-  const POOLS = {};
-  UNITS.forEach(u => { POOLS[u.key] = BANK.filter(p => p.unit === u.key).map(p => p.id); });
-  const permOf = (unit, cycle) => shuffled(POOLS[unit], hash(unit) + cycle * 7919);
-  function pickId(unit, idx) {
-    const len = POOLS[unit].length;
-    const cycle = Math.floor(idx / len), pos = idx % len;
-    const perm = permOf(unit, cycle);
-    if (pos === 0 && cycle > 0) { // 周回の境目で同じ問題が続かないようにする
-      const prev = permOf(unit, cycle - 1);
-      if (perm[0] === prev[len - 1]) [perm[0], perm[1]] = [perm[1], perm[0]];
-    }
-    return perm[pos];
-  }
-  const dailyIds = date => UNITS.map(u => pickId(u.key, ((dayIndex(date) % 100000) + 100000) % 100000));
+  const UNIT_IDS = {};
+  UNITS.forEach(u => { UNIT_IDS[u.key] = BANK.filter(p => p.unit === u.key).map(p => p.id); });
 
-  // 日ごとの出題は、初めて表示したときに問題IDで固定する(バンクを増やしても過去の日は変わらない)
-  const SNAP_KEY = "inorg.snap.v1";
-  function loadSnaps() { try { return JSON.parse(localStorage.getItem(SNAP_KEY)) || {}; } catch (e) { return {}; } }
-  let snaps = loadSnaps();
-  function saveSnaps() { try { localStorage.setItem(SNAP_KEY, JSON.stringify(snaps)); } catch (e) { /* 保存できなくても動作は続ける */ } }
-  function getSet(date) {
-    let ids = snaps[date];
-    if (!ids || ids.length !== N || ids.some(id => !BY_ID[id])) {
-      ids = dailyIds(date);
-      if (date <= TODAY) { snaps[date] = ids; saveSnaps(); }
-    }
-    return ids.map(id => BY_ID[id]);
-  }
+  function loadJSON(key) { try { return JSON.parse(localStorage.getItem(key)) || {}; } catch (e) { return {}; } }
+  function saveJSON(key, v) { try { localStorage.setItem(key, JSON.stringify(v)); } catch (e) { /* 保存できなくても動作は続ける */ } }
 
-  // ---------- 進捗 { "YYYY-MM-DD": { "0": "done" | "peek" } } ----------
-  function load() { try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch (e) { return {}; } }
-  function save() { try { localStorage.setItem(KEY, JSON.stringify(progress)); } catch (e) { /* 保存できなくても動作は続ける */ } }
-  let progress = load();
-  const stOf = (date, i) => (progress[date] || {})[i];
-  function setSt(date, i, v) {
-    progress[date] = progress[date] || {};
-    if (progress[date][i] === "done" && v !== "done") return; // 正解済みは上書きしない
-    progress[date][i] = v;
-    save();
-  }
-  const doneCount = date => UNITS.filter((u, i) => stOf(date, i) === "done").length;
-  function streak() {
-    let d = TODAY, n = 0;
-    if (doneCount(d) < N) d = addDays(d, -1);
-    while (doneCount(d) === N) { n++; d = addDays(d, -1); }
-    return n;
-  }
+  // ---------- 問題ごとの結果 { 問題ID: "done"(最後の回答が正解) | "peek"(最後の回答が不正解・答えを見た) } ----------
+  const PROG_KEY = "inorg.prog.v1";
+  let prog = loadJSON(PROG_KEY);
+  Object.keys(prog).forEach(k => { if (!BY_ID[k]) delete prog[k]; });
+  function setProg(id, v) { prog[id] = v; saveJSON(PROG_KEY, prog); }
+  const statOf = ids => ({ total: ids.length, done: ids.filter(id => prog[id] === "done").length, ng: ids.filter(id => prog[id] === "peek").length });
 
-  // ---------- 使い始めの日 ----------
-  // この端末で初めて開いた日。これより前の日には戻れない。保存がない端末では、記録の最も古い日を使う。
-  const START_KEY = "inorg.start.v1";
-  const START = (() => {
-    let s = null;
-    try { s = localStorage.getItem(START_KEY); } catch (e) { /* 読めなくても動作は続ける */ }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(s || "")) {
-      s = [TODAY].concat(Object.keys(snaps), Object.keys(progress)).filter(k => /^\d{4}-\d{2}-\d{2}$/.test(k)).sort()[0];
-      try { localStorage.setItem(START_KEY, s); } catch (e) { /* 保存できなくても動作は続ける */ }
-    }
-    return s <= TODAY ? s : TODAY;
-  })();
+  // ---------- ランダムテスト(1日1回更新。日付から問題が決まり、最初に開いたときに固定する) ----------
+  const TEST_KEY = "inorg.test.v1";
+  let tests = loadJSON(TEST_KEY); // { 日付: { ids: [...], res: { 問題ID: "done"|"peek" } } }
+  function getTest(date) {
+    const t = tests[date];
+    if (t && Array.isArray(t.ids) && t.ids.length === TEST_N && t.ids.every(id => BY_ID[id])) return t;
+    let ids = [];
+    UNITS.forEach(u => { ids = ids.concat(shuffled(UNIT_IDS[u.key], hash(u.key + date)).slice(0, TEST_PER_UNIT)); });
+    ids = shuffled(ids, hash("test" + date));
+    tests[date] = { ids, res: {} };
+    const keys = Object.keys(tests).sort(); // 古い日から消す(60日分だけ残す)
+    keys.slice(0, Math.max(0, keys.length - 60)).forEach(k => delete tests[k]);
+    saveJSON(TEST_KEY, tests);
+    return tests[date];
+  }
 
   // ---------- 復習リスト ----------
   // 間違えた問題(「答えを見る」を含む)を問題IDで保存する。2回連続で正解したら外す。間違えると連続回数は0に戻る。
   const REVIEW_KEY = "inorg.review.v1";
   const REVIEW_NEED = 2;
-  function loadReview() {
-    try {
-      const r = JSON.parse(localStorage.getItem(REVIEW_KEY)) || {};
-      Object.keys(r).forEach(k => { if (!BY_ID[k]) delete r[k]; }); // バンクから消えた問題は捨てる
-      return r;
-    } catch (e) { return {}; }
-  }
-  let review = loadReview();
-  function saveReview() { try { localStorage.setItem(REVIEW_KEY, JSON.stringify(review)); } catch (e) { /* 保存できなくても動作は続ける */ } }
+  let review = loadJSON(REVIEW_KEY);
+  Object.keys(review).forEach(k => { if (!BY_ID[k]) delete review[k]; });
+  function saveReview() { saveJSON(REVIEW_KEY, review); }
   function reviewAdd(p, date) {
     const isNew = !review[p.id];
     review[p.id] = { from: date, streak: 0, at: Date.now() };
@@ -144,104 +101,162 @@
   const reviewList = () => Object.keys(review).map(id => ({ id, ...review[id] })).sort((a, b) => b.at - a.at);
 
   // ---------- 共通部品 ----------
-  let mode = "daily";
+  let mode = "units"; // "units" = 分野別 / "test" = ランダムテスト / "review" = 復習リスト
   function tabs() {
-    const t = el("div", { class: "tabs", role: "tablist" });
-    const a = el("button", { class: "tab", role: "tab", "aria-selected": String(mode === "daily") }, "今日の5題");
+    const t = el("div", { class: "tabs t3", role: "tablist" });
     const n = Object.keys(review).length;
-    const b = el("button", { class: "tab", role: "tab", "aria-selected": String(mode === "review") }, `復習リスト${n ? `<span class="tab-n">${n}</span>` : ""}`);
-    a.addEventListener("click", () => { if (mode !== "daily") { viewDate = TODAY; showList(); } });
-    b.addEventListener("click", () => { if (mode !== "review") showReview(); });
-    t.append(a, b);
+    [["units", "分野別", showUnits], ["test", "ランダムテスト", showTest],
+     ["review", `復習リスト${n ? `<span class="tab-n">${n}</span>` : ""}`, showReview]].forEach(([key, label, fn]) => {
+      const b = el("button", { class: "tab", role: "tab", "aria-selected": String(mode === key) }, label);
+      b.addEventListener("click", () => { if (mode !== key) fn(); });
+      t.appendChild(b);
+    });
     return t;
   }
   function updateSummary() {
     if (mode === "review") {
       summary.innerHTML = `復習 <b>${Object.keys(review).length}</b> 問`;
       barFill.style.width = "0%";
-      return;
+    } else if (mode === "test") {
+      const t = getTest(TODAY);
+      const n = t.ids.filter(id => t.res[id] === "done").length;
+      summary.innerHTML = `<b>${n}</b> / ${TEST_N} 問 正解`;
+      barFill.style.width = n / TEST_N * 100 + "%";
+    } else {
+      const s = statOf(BANK.map(p => p.id));
+      summary.innerHTML = `<b>${s.done}</b> / ${s.total} 問 正解済み`;
+      barFill.style.width = s.done / s.total * 100 + "%";
     }
-    const n = doneCount(viewDate);
-    summary.innerHTML = `<b>${n}</b> / ${N} 問 正解`;
-    barFill.style.width = n / N * 100 + "%";
   }
   const unitTag = p => `<span class="utag u-${p.unit}">${esc(UNIT_LABEL[p.unit])}</span>`;
-
-  // ---------- 一覧 ----------
-  function showList() {
-    mode = "daily";
+  const typeTag = p => `<span class="ttag">${TYPE_LABEL[p.type] || ""}</span>`;
+  function begin() {
     updateSummary();
     bottomNav.hidden = true;
     app.replaceChildren();
     window.scrollTo(0, 0);
-    const set = getSet(viewDate);
     const wrap = el("div", { class: "fade-in" });
     wrap.appendChild(tabs());
+    return wrap;
+  }
+  function rowButton(num, p, st, extraMeta) {
+    const mark = st === "done" ? "✓" : st === "peek" ? "✕" : "";
+    return el("button", { class: "item", "data-st": st || "todo" },
+      `<span class="num">${num}</span>
+       <span style="min-width:0"><span class="item-q">${esc(p.q)}</span>
+         <span class="item-meta">${extraMeta}</span></span>
+       <span class="status" aria-hidden="true">${mark}</span>`);
+  }
 
-    const nav = el("div", { class: "datenav" });
-    const prev = el("button", { class: "iconbtn", "aria-label": "前の日" }, "‹");
-    const next = el("button", { class: "iconbtn", "aria-label": "次の日" }, "›");
-    next.disabled = viewDate >= TODAY;
-    prev.disabled = viewDate <= START;
-    prev.addEventListener("click", () => { viewDate = addDays(viewDate, -1); showList(); });
-    next.addEventListener("click", () => { viewDate = addDays(viewDate, 1); showList(); });
-    const mid = el("div", { class: "date" }, `${dateLabel(viewDate)}<small>${viewDate === TODAY ? "TODAY" : "REVIEW"}</small>`);
-    if (viewDate !== TODAY) {
-      const t = el("button", { class: "today-btn" }, "今日へ戻る");
-      t.addEventListener("click", () => { viewDate = TODAY; showList(); });
-      mid.appendChild(t);
+  // ---------- 分野別(全問の一覧。どの問題もいつでも解ける) ----------
+  let curUnit = UNITS[0].key;
+  let stFilter = "all";   // all / todo / ng / done
+  let tyFilter = "all";   // all / choice / color / fill
+  function showUnits() {
+    mode = "units";
+    const wrap = begin();
+
+    const chips = el("div", { class: "filters unit-chips", role: "group", "aria-label": "分野を選ぶ" });
+    UNITS.forEach(u => {
+      const s = statOf(UNIT_IDS[u.key]);
+      const b = el("button", { class: "filter", "aria-pressed": String(curUnit === u.key) }, `${esc(u.label)}<span>${s.done}/${s.total}</span>`);
+      b.addEventListener("click", () => { curUnit = u.key; showUnits(); });
+      chips.appendChild(b);
+    });
+    wrap.appendChild(chips);
+
+    const ids = UNIT_IDS[curUnit];
+    const s = statOf(ids);
+    wrap.appendChild(el("div", { class: "unit-prog" },
+      `<span><b>${s.done}</b> / ${s.total} 問 正解済み</span><span class="up-ng">${s.ng ? `不正解 ${s.ng}` : ""}</span>
+       <div class="bar"><i style="width:${s.done / s.total * 100}%"></i></div>`));
+
+    function filterRow(label, opts, get, set) {
+      const row = el("div", { class: "filters sub", role: "group", "aria-label": label });
+      opts.forEach(([key, text]) => {
+        const b = el("button", { class: "filter small", "aria-pressed": String(get() === key) }, text);
+        b.addEventListener("click", () => { set(key); showUnits(); });
+        row.appendChild(b);
+      });
+      wrap.appendChild(row);
     }
-    nav.append(prev, mid, next);
-    wrap.appendChild(nav);
+    filterRow("結果で絞り込む", [["all", "すべて"], ["todo", "未回答"], ["ng", "不正解"], ["done", "正解済み"]], () => stFilter, v => { stFilter = v; });
+    filterRow("形式で絞り込む", [["all", "全形式"], ["choice", "4択"], ["color", "色"], ["fill", "入力"]], () => tyFilter, v => { tyFilter = v; });
 
-    const sk = streak();
-    if (sk > 0) wrap.appendChild(el("div", { class: "streak" }, `<span>連続達成</span><b>${sk}</b><span>日</span>`));
-    if (doneCount(viewDate) === N) wrap.appendChild(el("div", { class: "all-clear" }, `この日の${N}題はすべて正解です。`));
-
-    wrap.appendChild(el("div", { class: "section-label" }, "今日の5題"));
+    const rows = ids.map((id, i) => ({ p: BY_ID[id], i })).filter(({ p }) => {
+      const st = prog[p.id];
+      if (stFilter === "todo" && st) return false;
+      if (stFilter === "ng" && st !== "peek") return false;
+      if (stFilter === "done" && st !== "done") return false;
+      if (tyFilter !== "all" && p.type !== tyFilter) return false;
+      return true;
+    });
+    wrap.appendChild(el("div", { class: "section-label" }, `${esc(UNIT_LABEL[curUnit])}　${rows.length} 問`));
+    if (!rows.length) wrap.appendChild(el("div", { class: "empty" }, "条件に合う問題はありません。"));
     const list = el("div", { class: "list" });
-    set.forEach((p, i) => {
-      const st = stOf(viewDate, i) || "todo";
-      const mark = st === "done" ? "✓" : st === "peek" ? "✕" : "";
-      const b = el("button", { class: "item", "data-st": st },
-        `<span class="num">${i + 1}</span>
-         <span style="min-width:0"><span class="item-q">${esc(p.q)}</span>
-           <span class="item-meta">${unitTag(p)}</span></span>
-         <span class="status" aria-hidden="true">${mark}</span>`);
-      b.addEventListener("click", () => showProblem(i));
+    rows.forEach(({ p, i }, k) => {
+      const b = rowButton(i + 1, p, prog[p.id], typeTag(p));
+      b.addEventListener("click", () => showUnitProblem(rows.map(r => r.p), k));
       list.appendChild(b);
     });
     wrap.appendChild(list);
 
-    const nrv = Object.keys(review).length;
-    if (nrv) {
-      const c = el("button", { class: "rv-card" }, `<span>復習リストに <b>${nrv}</b> 問あります</span><span>見る ›</span>`);
-      c.addEventListener("click", showReview);
-      wrap.appendChild(c);
-    }
-
     const foot = el("div", { class: "list-foot" });
     const reset = el("button", { class: "link" }, "記録をリセット");
     reset.addEventListener("click", () => {
-      if (confirm("すべての日の記録を消しますか？(復習リストは残ります)")) { progress = {}; save(); showList(); }
+      if (confirm("すべての問題の結果とテストの記録を消しますか？(復習リストは残ります)")) { prog = {}; saveJSON(PROG_KEY, prog); tests = {}; saveJSON(TEST_KEY, tests); showUnits(); }
     });
     foot.appendChild(reset);
     wrap.appendChild(foot);
     app.appendChild(wrap);
   }
-
-  // ---------- 問題 ----------
-  function showProblem(i) {
-    const set = getSet(viewDate);
-    renderProblem(set[i], {
-      chip: dateLabel(viewDate), back: showList, backAria: "5題の一覧に戻る",
-      pos: i + 1, total: set.length, go: d => showProblem(i + d),
-      isWrongNew: () => stOf(viewDate, i) !== "done", // 正解済みの問題を間違えても復習には足さない
-      mark: status => { setSt(viewDate, i, status); updateSummary(); },
-      date: viewDate
+  function showUnitProblem(ps, k) {
+    const p = ps[k];
+    renderProblem(p, {
+      chip: UNIT_LABEL[p.unit], back: showUnits, backAria: "問題の一覧に戻る",
+      pos: k + 1, total: ps.length, go: d => showUnitProblem(ps, k + d),
+      mark: st => { setProg(p.id, st); updateSummary(); },
+      seed: String(Math.random()), from: TODAY
     });
   }
 
+  // ---------- ランダムテスト ----------
+  function showTest() {
+    mode = "test";
+    const wrap = begin();
+    const t = getTest(TODAY);
+    const n = t.ids.filter(id => t.res[id] === "done").length;
+    const answered = t.ids.filter(id => t.res[id]).length;
+
+    wrap.appendChild(el("div", { class: "test-head" },
+      `<div class="date">${dateLabel(TODAY)}<small>TODAY'S TEST</small></div>
+       <p>全分野からランダムに ${TEST_N} 問。日付が変わると新しい問題になります。</p>`));
+    if (answered === TEST_N) {
+      wrap.appendChild(el("div", { class: n === TEST_N ? "all-clear" : "test-score" },
+        n === TEST_N ? `全問正解です。（${TEST_N} / ${TEST_N}）` : `今日の結果　${n} / ${TEST_N} 問 正解`));
+    }
+    wrap.appendChild(el("div", { class: "section-label" }, "今日のテスト"));
+    const list = el("div", { class: "list" });
+    const ps = t.ids.map(id => BY_ID[id]);
+    ps.forEach((p, i) => {
+      const b = rowButton(i + 1, p, t.res[p.id], unitTag(p) + typeTag(p));
+      b.addEventListener("click", () => showTestProblem(ps, i));
+      list.appendChild(b);
+    });
+    wrap.appendChild(list);
+    app.appendChild(wrap);
+  }
+  function showTestProblem(ps, k) {
+    const p = ps[k];
+    renderProblem(p, {
+      chip: "ランダムテスト", back: showTest, backAria: "テストの一覧に戻る",
+      pos: k + 1, total: ps.length, go: d => showTestProblem(ps, k + d),
+      mark: st => { const t = getTest(TODAY); t.res[p.id] = st; saveJSON(TEST_KEY, tests); setProg(p.id, st); updateSummary(); },
+      seed: TODAY, from: TODAY
+    });
+  }
+
+  // ---------- 問題 ----------
   function renderProblem(p, ctx) {
     updateSummary();
     app.replaceChildren();
@@ -260,8 +275,8 @@
     wrap.appendChild(q);
 
     function buildChoice() {
-    // 選択肢(日付+問題IDで並びを固定。同じ画面を開き直しても位置は変わらない)
-    const opts = shuffled([p.a].concat(p.d), hash(p.id + ctx.date));
+    // 選択肢の並びは、一覧から開いたときは毎回変わり、テストでは日付で固定する
+    const opts = shuffled([p.a].concat(p.d), hash(p.id + ctx.seed));
     const box = el("section", { class: "panel" });
     box.appendChild(el("div", { class: "field-label" }, p.type === "color" ? "色を選んでください" : "選択肢"));
     const grid = el("div", { class: "choices" + (p.type === "color" ? " color" : "") });
@@ -299,9 +314,8 @@
       });
     }
     function wrongNote() {
-      if (!ctx.isWrongNew()) return;
       const had = !!review[p.id];
-      reviewAdd(p, ctx.date);
+      reviewAdd(p, ctx.from);
       if (!had) result.appendChild(el("div", { class: "rv-note" }, "復習リストに追加しました"));
     }
     btns.forEach(b => b.addEventListener("click", () => {
@@ -328,7 +342,6 @@
       ctx.mark("peek");
       showExplain();
     });
-
     }
 
     // 化学式を入力する問題(キーパッド入力。数字は自動で添字として表示する)
@@ -407,10 +420,10 @@
       }
       let solved = false, wrongLogged = false;
       function wrongNote() {
-        if (solved || wrongLogged || !ctx.isWrongNew()) return;
+        if (solved || wrongLogged) return;
         wrongLogged = true;
         const had = !!review[p.id];
-        reviewAdd(p, ctx.date);
+        reviewAdd(p, ctx.from);
         if (!had) result.appendChild(el("div", { class: "rv-note" }, "復習リストに追加しました"));
       }
       function check() {
@@ -422,12 +435,13 @@
           setResult("ok", "✓", "正解です");
           if (rv === "removed") result.appendChild(el("div", { class: "rv-note ok" }, `${REVIEW_NEED}回連続で正解したので、復習リストから外しました`));
           else if (rv === "up") result.appendChild(el("div", { class: "rv-note ok" }, `復習リスト: 連続正解 ${review[p.id].streak} / ${REVIEW_NEED}`));
-          ctx.mark("done");
+          ctx.mark(wrongLogged ? "peek" : "done"); // 間違えてから正解した場合は、不正解のまま記録する
           peek.remove();
           showExplain();
         } else {
           setResult("ng", "✕", "惜しい、もう一度考えてみましょう");
           wrongNote();
+          ctx.mark("peek");
         }
       }
       judge.addEventListener("click", check);
@@ -463,12 +477,7 @@
   let reviewFilter = "all";
   function showReview() {
     mode = "review";
-    updateSummary();
-    bottomNav.hidden = true;
-    app.replaceChildren();
-    window.scrollTo(0, 0);
-    const wrap = el("div", { class: "fade-in" });
-    wrap.appendChild(tabs());
+    const wrap = begin();
 
     const all = reviewList();
     if (reviewFilter !== "all" && !all.some(r => BY_ID[r.id].unit === reviewFilter)) reviewFilter = "all";
@@ -495,7 +504,7 @@
       const b = el("button", { class: "item", "data-st": r.streak > 0 ? "done" : "todo" },
         `<span class="num">${idx + 1}</span>
          <span style="min-width:0"><span class="item-q">${esc(p.q)}</span>
-           <span class="item-meta">${unitTag(p)}<span>${dateLabel(r.from)}</span></span></span>
+           <span class="item-meta">${unitTag(p)}${typeTag(p)}<span>${dateLabel(r.from)}</span></span></span>
          <span class="pips" aria-label="連続正解 ${r.streak} / ${REVIEW_NEED}">${pips}</span>`);
       b.addEventListener("click", () => showReviewProblem(rows, idx));
       const del = el("button", { class: "rv-del", type: "button", "aria-label": "復習リストから外す" }, "×");
@@ -508,13 +517,12 @@
   }
 
   function showReviewProblem(rows, idx) {
-    const r = rows[idx];
-    renderProblem(BY_ID[r.id], {
-      chip: `復習　${dateLabel(r.from)}の問題`, back: showReview, backAria: "復習リストに戻る",
+    const r = rows[idx], p = BY_ID[r.id];
+    renderProblem(p, {
+      chip: `復習　${dateLabel(r.from)}`, back: showReview, backAria: "復習リストに戻る",
       pos: idx + 1, total: rows.length, go: d => showReviewProblem(rows, idx + d),
-      isWrongNew: () => true,
-      mark: () => updateSummary(),
-      date: r.from
+      mark: st => { setProg(p.id, st); updateSummary(); },
+      seed: String(Math.random()), from: r.from
     });
   }
 
@@ -522,11 +530,10 @@
   if (titleEl) {
     titleEl.setAttribute("role", "button");
     titleEl.setAttribute("tabindex", "0");
-    titleEl.setAttribute("aria-label", "今日の一覧に戻る");
-    const goHome = () => { viewDate = TODAY; showList(); };
-    titleEl.addEventListener("click", goHome);
-    titleEl.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goHome(); } });
+    titleEl.setAttribute("aria-label", "分野別の一覧に戻る");
+    titleEl.addEventListener("click", showUnits);
+    titleEl.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); showUnits(); } });
   }
 
-  showList();
+  showUnits();
 })();

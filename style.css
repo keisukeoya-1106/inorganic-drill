@@ -348,3 +348,21 @@ input[type=text] { caret-color: var(--accent); }
 .preview .fm, .result .fm { font-size: 1.35rem; font-weight: 700; color: var(--text); letter-spacing: .02em; }
 .result .fm { color: inherit; }
 .preview sub, .result sub { font-size: .7em; }
+
+/* ---------- 分野別・ランダムテスト ---------- */
+.tabs.t3 { grid-template-columns: 1fr 1.25fr 1fr; }
+.tabs.t3 .tab { font-size: .82rem; padding: 0 4px; gap: 5px; }
+.unit-chips { margin-bottom: 12px; }
+.unit-chips .filter { padding: 7px 11px; }
+.filters.sub { margin-bottom: 8px; gap: 6px; }
+.filter.small { padding: 4px 11px; font-size: .78rem; }
+.unit-prog { display: grid; grid-template-columns: 1fr auto; align-items: baseline; gap: 2px 10px; margin: 4px 4px 12px; font-size: .85rem; color: var(--muted); }
+.unit-prog b { color: var(--accent); font-size: 1.15rem; }
+.unit-prog .up-ng { color: var(--ng); font-weight: 600; }
+.unit-prog .bar { grid-column: 1 / -1; margin-top: 4px; }
+.ttag { font-size: .7rem; font-weight: 600; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.test-head { margin: 4px 0 14px; }
+.test-head .date { font-weight: 700; font-size: 1.05rem; }
+.test-head .date small { display: block; font-weight: 500; font-size: .72rem; color: var(--muted); letter-spacing: .08em; }
+.test-head p { margin: 4px 0 0; color: var(--muted); font-size: .85rem; }
+.test-score { margin-bottom: 14px; padding: 14px 16px; border-radius: var(--radius); background: var(--accent-soft); color: var(--accent); font-weight: 700; }
