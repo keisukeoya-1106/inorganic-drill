@@ -8,7 +8,9 @@
   BANK.forEach(p => { BY_ID[p.id] = p; });
   const UNIT_LABEL = {};
   UNITS.forEach(u => { UNIT_LABEL[u.key] = u.label; });
-  const TYPE_LABEL = { choice: "4択", color: "色", fill: "入力" };
+  const TYPE_LABEL = { choice: "4択", color: "色", fill: "化学式", elem: "元素", err: "誤り探し", multi: "全て選べ" };
+  // 一覧に出す問題文(全て選べ形式は問題文が共通なので、題材で見分ける)
+  const listQ = p => p.type === "multi" ? `${p.title}に関する記述 a〜e から、正しいものをすべて選ぶ` : p.q;
   const TEST_PER_UNIT = 2; // ランダムテストは、各分野からこの数ずつ出す
   const TEST_N = UNITS.length * TEST_PER_UNIT;
   const WD = ["日", "月", "火", "水", "木", "金", "土"];
@@ -143,7 +145,7 @@
     const mark = st === "done" ? "✓" : st === "peek" ? "✕" : "";
     return el("button", { class: "item", "data-st": st || "todo" },
       `<span class="num">${num}</span>
-       <span style="min-width:0"><span class="item-q">${esc(p.q)}</span>
+       <span style="min-width:0"><span class="item-q">${esc(listQ(p))}</span>
          <span class="item-meta">${extraMeta}</span></span>
        <span class="status" aria-hidden="true">${mark}</span>`);
   }
@@ -181,7 +183,7 @@
       wrap.appendChild(row);
     }
     filterRow("結果で絞り込む", [["all", "すべて"], ["todo", "未回答"], ["ng", "不正解"], ["done", "正解済み"]], () => stFilter, v => { stFilter = v; });
-    filterRow("形式で絞り込む", [["all", "全形式"], ["choice", "4択"], ["color", "色"], ["fill", "入力"]], () => tyFilter, v => { tyFilter = v; });
+    filterRow("形式で絞り込む", [["all", "全形式"], ["fill", "化学式"], ["color", "色"], ["elem", "元素"], ["err", "誤り探し"], ["multi", "全て選べ"], ["choice", "4択"]], () => tyFilter, v => { tyFilter = v; });
 
     const rows = ids.map((id, i) => ({ p: BY_ID[id], i })).filter(({ p }) => {
       const st = prog[p.id];
@@ -269,193 +271,237 @@
     crumbs.append(backBtn, el("span", { class: "chip" }, esc(ctx.chip)), el("span", { class: "chip plain" }, esc(UNIT_LABEL[p.unit])));
     wrap.appendChild(crumbs);
 
+    const LS = "abcde";
+    const CIRC = "①②③④⑤";
+    const segEls = [];
     const q = el("section", { class: "panel" });
     q.appendChild(el("div", { class: "q-no" }, `QUESTION ${ctx.pos}`));
-    q.appendChild(el("p", { class: "q-body" }, esc(p.q)));
+    if (p.type === "err") {
+      q.appendChild(el("p", { class: "q-body" }, "次の文章には、誤りが1か所ある。誤っている下線部を選べ。"));
+      const para = el("p", { class: "err-text" });
+      p.text.split(/\{\{(.+?)\}\}/).forEach((t, i) => {
+        if (i % 2 === 0) { para.appendChild(document.createTextNode(t)); return; }
+        const s = el("span", { class: "seg" }, `<span class="no">${CIRC[(i - 1) / 2]}</span>${esc(t)}`);
+        segEls.push(s);
+        para.appendChild(s);
+      });
+      q.appendChild(para);
+    } else if (p.type === "multi") {
+      q.appendChild(el("p", { class: "q-body" }, esc(p.q)));
+      const ol = el("ol", { class: "stmts" });
+      p.stmts.forEach((s, i) => ol.appendChild(el("li", null, `<i class="lt">${LS[i]}</i><span>${esc(s.t)}</span>`)));
+      q.appendChild(ol);
+    } else {
+      q.appendChild(el("p", { class: "q-body" }, esc(p.q)));
+    }
     wrap.appendChild(q);
 
-    function buildChoice() {
-    // 選択肢の並びは、一覧から開いたときは毎回変わり、テストでは日付で固定する
-    const opts = shuffled([p.a].concat(p.d), hash(p.id + ctx.seed));
-    const box = el("section", { class: "panel" });
-    box.appendChild(el("div", { class: "field-label" }, p.type === "color" ? "色を選んでください" : "選択肢"));
-    const grid = el("div", { class: "choices" + (p.type === "color" ? " color" : "") });
-    const btns = opts.map((o, k) => {
-      const sw = p.type === "color" ? `<i class="sw" style="background:${SWATCH[o] || "#ccc"}"></i>` : `<i class="lt">${"ABCD"[k]}</i>`;
-      const b = el("button", { type: "button", class: "choice" }, `${sw}<span class="ct">${esc(o)}</span>`);
-      b.dataset.v = o;
-      grid.appendChild(b);
-      return b;
-    });
-    box.appendChild(grid);
+    // ---- 採点・復習リスト・解説(形式によらず共通) ----
     const result = el("div");
-    const peek = el("button", { class: "link", style: "display:block;margin:10px auto 0" }, "答えを見る");
-    box.append(result, peek);
-    wrap.appendChild(box);
     const explain = el("div");
-    wrap.appendChild(explain);
-    app.appendChild(wrap);
-
-    let answered = false;
     function setResult(cls, icon, html) {
       result.replaceChildren(el("div", { class: "result " + cls }, `<span class="ico">${icon}</span><span>${html}</span>`));
     }
-    function showExplain() {
-      explain.replaceChildren(el("section", { class: "panel explain" }, `<h3>解説</h3><p>${esc(p.exp)}</p>`));
-      setTimeout(() => explain.firstChild.scrollIntoView({ behavior: "smooth", block: "nearest" }), 60);
+    function explainHtml() {
+      if (p.type === "multi") {
+        const rows = p.stmts.map((s, i) =>
+          `<li class="${s.ok ? "t" : "f"}"><i class="lt">${LS[i]}</i><b>${s.ok ? "〇" : "×"}</b><span>${esc(s.t)}${s.ok ? "" : `<em>${esc(s.note)}</em>`}</span></li>`).join("");
+        return `<h3>解説</h3><ul class="stmt-ex">${rows}</ul>`;
+      }
+      let extra = "";
+      if (p.type === "err") {
+        let k = -1;
+        const fixed = p.text.replace(/\{\{(.+?)\}\}/g, (m, s) => (++k === p.bad ? p.fix : s));
+        extra = `<p class="fixed-sentence">${esc(fixed)}</p>`;
+      }
+      return `<h3>解説</h3>${extra}<p>${esc(p.exp)}</p>`;
     }
-    function lock(picked) {
-      answered = true;
-      peek.remove();
-      btns.forEach(b => {
-        b.disabled = true;
-        if (b.dataset.v === p.a) b.classList.add("right");
-        else if (b.dataset.v === picked) b.classList.add("wrong");
-      });
+    function showExplain() {
+      explain.replaceChildren(el("section", { class: "panel explain" }, explainHtml()));
+      setTimeout(() => explain.firstChild && explain.firstChild.scrollIntoView({ behavior: "smooth", block: "nearest" }), 60);
     }
     function wrongNote() {
       const had = !!review[p.id];
       reviewAdd(p, ctx.from);
       if (!had) result.appendChild(el("div", { class: "rv-note" }, "復習リストに追加しました"));
     }
-    btns.forEach(b => b.addEventListener("click", () => {
-      if (answered) return;
-      const v = b.dataset.v;
-      lock(v);
-      if (v === p.a) {
-        setResult("ok", "✓", "正解です");
+    const grade = {
+      right(html) {
+        setResult("ok", "✓", html);
         const rv = reviewCorrect(p);
         if (rv === "removed") result.appendChild(el("div", { class: "rv-note ok" }, `${REVIEW_NEED}回連続で正解したので、復習リストから外しました`));
         else if (rv === "up") result.appendChild(el("div", { class: "rv-note ok" }, `復習リスト: 連続正解 ${review[p.id].streak} / ${REVIEW_NEED}`));
         ctx.mark("done");
-      } else {
-        setResult("ng", "✕", `不正解　正解は「${esc(p.a)}」`);
-        wrongNote();
-        ctx.mark("peek");
+        showExplain();
+      },
+      wrong(html) { setResult("ng", "✕", html); wrongNote(); ctx.mark("peek"); showExplain(); },
+      peek(html) { setResult("peek", "👁", html); wrongNote(); ctx.mark("peek"); showExplain(); }
+    };
+    const peekLink = () => el("button", { type: "button", class: "link", style: "display:block;margin:10px auto 0" }, "答えを見る");
+
+    // 4択・色・元素
+    function buildChoice() {
+      // 選択肢の並びは、一覧から開いたときは毎回変わり、テストでは日付で固定する
+      const opts = shuffled([p.a].concat(p.d), hash(p.id + ctx.seed));
+      const box = el("section", { class: "panel" });
+      box.appendChild(el("div", { class: "field-label" }, p.type === "color" ? "色を選んでください" : p.type === "elem" ? "元素を選んでください" : "選択肢"));
+      const grid = el("div", { class: "choices" + (p.type === "color" ? " color" : "") });
+      const btns = opts.map((o, k) => {
+        const sw = p.type === "color" ? `<i class="sw" style="background:${SWATCH[o] || "#ccc"}"></i>` : `<i class="lt">${"ABCD"[k]}</i>`;
+        const b = el("button", { type: "button", class: "choice" }, `${sw}<span class="ct">${esc(o)}</span>`);
+        b.dataset.v = o;
+        grid.appendChild(b);
+        return b;
+      });
+      const peek = peekLink();
+      box.append(grid, result, peek);
+      wrap.append(box, explain);
+
+      let answered = false;
+      function lock(picked) {
+        answered = true;
+        peek.remove();
+        btns.forEach(b => {
+          b.disabled = true;
+          if (b.dataset.v === p.a) b.classList.add("right");
+          else if (b.dataset.v === picked) b.classList.add("wrong");
+        });
       }
-      showExplain();
-    }));
-    peek.addEventListener("click", () => {
-      lock(null);
-      setResult("peek", "👁", `答え　${esc(p.a)}`);
-      wrongNote();
-      ctx.mark("peek");
-      showExplain();
-    });
+      btns.forEach(b => b.addEventListener("click", () => {
+        if (answered) return;
+        const v = b.dataset.v;
+        lock(v);
+        if (v === p.a) grade.right("正解です");
+        else grade.wrong(`不正解　正解は「${esc(p.a)}」`);
+      }));
+      peek.addEventListener("click", () => { lock(null); grade.peek(`答え　${esc(p.a)}`); });
     }
 
-    // 化学式を入力する問題(キーパッド入力。数字は自動で添字として表示する)
-    function buildFill() {
+    // 誤り探し(下線部の番号を選ぶ)
+    function buildErr() {
       const box = el("section", { class: "panel" });
-      box.appendChild(el("div", { class: "label-row" }, `<label class="field-label" for="ans">あなたの答え（化学式）</label>`));
-      const input = el("input", { type: "text", id: "ans", inputmode: "none", autocomplete: "off", autocapitalize: "off", spellcheck: "false", placeholder: "下のキーで入力" });
-      const preview = el("div", { class: "preview" });
-      const ELEM = ["H", "C", "N", "O", "F", "S", "Cl", "Br", "I", "P", "Si", "K", "Na", "Mg", "Al", "Ca", "Ba", "Zn", "Fe", "Cu", "Ag", "Mn", "Cr", "Pb", "Sn", "Ni", "Hg", "Li", "Co", "Au"];
-      const KEYS = ELEM.map(e => [e, e, "fn"]).concat([
-        ["1", "1"], ["2", "2"], ["3", "3"], ["4", "4"], ["5", "5"], ["6", "6"],
-        ["7", "7"], ["8", "8"], ["9", "9"], ["0", "0"], ["(", "(", "op"], [")", ")", "op"],
-        ["[", "[", "op"], ["]", "]", "op"], ["·", "·", "op"], ["⁺", "⁺", "op"], ["⁻", "⁻", "op"], ["²", "²", "op"],
-        ["³", "³", "op"], ["⁴", "⁴", "op"], ["◀", "@left", "ctl"], ["▶", "@right", "ctl"], ["⌫", "@del", "ctl"], ["消す", "@clear", "ctl"]
-      ]);
-      const kbd = el("div", { class: "kbd chem", role: "group", "aria-label": "入力キー" });
-      KEYS.forEach(([label, ins, type]) => {
-        const b = el("button", { type: "button", class: type || "" }, label);
-        b.addEventListener("pointerdown", e => e.preventDefault()); // 入力欄のカーソル位置を保つ
-        b.addEventListener("click", () => {
-          if (ins === "@left") moveCursor(-1);
-          else if (ins === "@right") moveCursor(1);
-          else if (ins === "@del") backspace();
-          else if (ins === "@clear") { input.value = ""; input.dispatchEvent(new Event("input")); }
-          else insertText(ins);
+      box.appendChild(el("div", { class: "field-label" }, "誤っている下線部の番号"));
+      const keys = el("div", { class: "mkeys" });
+      keys.style.gridTemplateColumns = `repeat(${p.segs.length}, 1fr)`;
+      const btns = p.segs.map((s, k) => {
+        const b = el("button", { type: "button", class: "mkey" }, CIRC[k]);
+        keys.appendChild(b);
+        return b;
+      });
+      const peek = peekLink();
+      box.append(keys, result, peek);
+      wrap.append(box, explain);
+
+      let answered = false;
+      function lock(picked) {
+        answered = true;
+        peek.remove();
+        btns.forEach((b, k) => {
+          b.disabled = true;
+          if (k === p.bad) b.classList.add("right");
+          else if (k === picked) b.classList.add("wrong");
         });
-        kbd.appendChild(b);
+        segEls.forEach((s, k) => {
+          if (k !== p.bad) return;
+          s.classList.add("bad");
+          s.appendChild(el("span", { class: "fixed" }, `→ ${esc(p.fix)}`));
+        });
+      }
+      const msg = `誤りは ${CIRC[p.bad]}　正しくは「${esc(p.fix)}」`;
+      btns.forEach((b, k) => b.addEventListener("click", () => {
+        if (answered) return;
+        lock(k);
+        if (k === p.bad) grade.right(`正解です　${msg}`);
+        else grade.wrong(`不正解　${msg}`);
+      }));
+      peek.addEventListener("click", () => { lock(null); grade.peek(`答え　${msg}`); });
+    }
+
+    // 正しいものをすべて選ぶ(a〜e のキーパッド)
+    function buildMulti() {
+      const box = el("section", { class: "panel" });
+      box.appendChild(el("div", { class: "field-label" }, "正しいと思う記号をすべて選んでください"));
+      const sel = new Set();
+      const keys = el("div", { class: "mkeys" });
+      keys.style.gridTemplateColumns = "repeat(5, 1fr)";
+      const cur = el("div", { class: "m-cur" });
+      function refresh() {
+        const v = LS.split("").filter(c => sel.has(c)).join(", ");
+        cur.innerHTML = `<span class="lab">あなたの答え</span>${v ? `<span class="m-val">${v}</span>` : `<span class="m-none">未選択</span>`}`;
+        btns.forEach(b => b.setAttribute("aria-pressed", String(sel.has(b.dataset.v))));
+      }
+      const btns = LS.split("").map(c => {
+        const b = el("button", { type: "button", class: "mkey", "aria-pressed": "false" }, c);
+        b.dataset.v = c;
+        b.addEventListener("click", () => { if (sel.has(c)) sel.delete(c); else sel.add(c); refresh(); });
+        keys.appendChild(b);
+        return b;
       });
       const tools = el("div", { class: "kbd-tools" });
-      const sysBtn = el("button", { type: "button", class: "link" }, "⌨ 通常のキーボードで入力");
-      sysBtn.addEventListener("click", () => {
-        const sys = input.getAttribute("inputmode") === "none";
-        input.setAttribute("inputmode", sys ? "text" : "none");
-        sysBtn.textContent = sys ? "⌨ キーパッドに戻す" : "⌨ 通常のキーボードで入力";
-        input.blur(); input.focus();
-      });
-      tools.appendChild(sysBtn);
-      const judge = el("button", { class: "btn block", style: "margin-top:12px" }, "答え合わせ");
-      const peek = el("button", { class: "link", style: "display:block;margin:6px auto 0" }, "答えを見る");
-      const result = el("div");
-      box.append(input, preview, kbd, tools, judge, peek, result,
-        el("p", { class: "tip" }, "□に入る物質を書いてください。係数も含めて判定します（係数1は省略可）。元素記号は大文字・小文字を区別します（Co と CO は別）。数字は自動で添字になります。電荷は ⁺ ⁻ と ² ³ ⁴ で入力（例：SO₄²⁻ → S O 4 ² ⁻）。水和水の前の数字は添字になりません（CaSO₄·2H₂O）。"));
-      wrap.appendChild(box);
-      const explain = el("div");
-      wrap.appendChild(explain);
-      app.appendChild(wrap);
+      const clear = el("button", { type: "button", class: "link" }, "選択をすべて外す");
+      clear.addEventListener("click", () => { sel.clear(); refresh(); });
+      tools.appendChild(clear);
+      const judge = el("button", { type: "button", class: "btn block", style: "margin-top:12px" }, "答え合わせ");
+      const peek = peekLink();
+      box.append(keys, cur, tools, judge, result, peek);
+      wrap.append(box, explain);
+      refresh();
 
-      function insertText(s) {
-        const st = input.selectionStart ?? input.value.length, en = input.selectionEnd ?? input.value.length;
-        input.value = input.value.slice(0, st) + s + input.value.slice(en);
-        const pos = st + s.length;
-        input.setSelectionRange(pos, pos);
-        input.dispatchEvent(new Event("input"));
+      const correct = new Set(p.stmts.map((s, i) => s.ok ? LS[i] : "").filter(Boolean));
+      let answered = false;
+      function lock() {
+        answered = true;
+        peek.remove(); judge.remove(); tools.remove();
+        btns.forEach(b => {
+          b.disabled = true;
+          const c = b.dataset.v;
+          if (correct.has(c)) b.classList.add("right");
+          else if (sel.has(c)) b.classList.add("wrong");
+        });
       }
-      function moveCursor(d) {
-        const pos = Math.max(0, Math.min(input.value.length, (input.selectionStart ?? input.value.length) + d));
-        input.setSelectionRange(pos, pos);
-      }
-      function backspace() {
-        const st = input.selectionStart ?? input.value.length, en = input.selectionEnd ?? input.value.length;
-        if (st !== en) { input.value = input.value.slice(0, st) + input.value.slice(en); input.setSelectionRange(st, st); }
-        else if (st > 0) { input.value = input.value.slice(0, st - 1) + input.value.slice(st); input.setSelectionRange(st - 1, st - 1); }
-        input.dispatchEvent(new Event("input"));
-      }
-      input.addEventListener("input", () => {
-        result.replaceChildren(); input.classList.remove("ok");
-        preview.innerHTML = input.value.trim() ? `<span class="lab">入力</span><span class="fm">${InorganicBank.fmtFormula(input.value)}</span>` : "";
+      judge.addEventListener("click", () => {
+        if (answered) return;
+        if (!sel.size) { setResult("peek", "!", "記号を選んでから答え合わせをしてください"); return; }
+        const ok = sel.size === correct.size && [...sel].every(c => correct.has(c));
+        lock();
+        if (ok) grade.right(`正解です　${esc(p.a)}`);
+        else grade.wrong(`不正解　正解は ${esc(p.a)}`);
       });
+      peek.addEventListener("click", () => { lock(); grade.peek(`答え　${esc(p.a)}`); });
+    }
 
-      function setResult(cls, icon, html) {
-        result.replaceChildren(el("div", { class: "result " + cls }, `<span class="ico">${icon}</span><span>${html}</span>`));
-      }
-      function showExplain() {
-        explain.replaceChildren(el("section", { class: "panel explain" }, `<h3>解説</h3><p>${esc(p.exp)}</p>`));
-        setTimeout(() => explain.firstChild.scrollIntoView({ behavior: "smooth", block: "nearest" }), 60);
-      }
-      let solved = false, wrongLogged = false;
-      function wrongNote() {
-        if (solved || wrongLogged) return;
-        wrongLogged = true;
-        const had = !!review[p.id];
-        reviewAdd(p, ctx.from);
-        if (!had) result.appendChild(el("div", { class: "rv-note" }, "復習リストに追加しました"));
-      }
-      function check() {
-        if (!input.value.trim()) { input.focus(); return; }
-        if (InorganicBank.judgeFormula(input.value, p)) {
-          input.classList.add("ok");
-          const rv = (solved || wrongLogged) ? null : reviewCorrect(p); // この画面で間違えたあとの正解は、連続回数に数えない
-          solved = true;
-          setResult("ok", "✓", "正解です");
-          if (rv === "removed") result.appendChild(el("div", { class: "rv-note ok" }, `${REVIEW_NEED}回連続で正解したので、復習リストから外しました`));
-          else if (rv === "up") result.appendChild(el("div", { class: "rv-note ok" }, `復習リスト: 連続正解 ${review[p.id].streak} / ${REVIEW_NEED}`));
-          ctx.mark(wrongLogged ? "peek" : "done"); // 間違えてから正解した場合は、不正解のまま記録する
-          peek.remove();
-          showExplain();
-        } else {
-          setResult("ng", "✕", "惜しい、もう一度考えてみましょう");
-          wrongNote();
-          ctx.mark("peek");
-        }
-      }
-      judge.addEventListener("click", check);
-      input.addEventListener("keydown", e => { if (e.key === "Enter") check(); });
-      peek.addEventListener("click", () => {
-        setResult("peek", "👁", `答え　<span class="fm">${esc(p.a)}</span>`);
-        wrongNote();
-        ctx.mark("peek");
-        peek.remove();
-        showExplain();
+    // 化学式(答えを見て、〇か×を自分で付ける。×は復習リストに入る)
+    function buildFill() {
+      const box = el("section", { class: "panel" });
+      box.appendChild(el("div", { class: "field-label" }, "紙やノートに書いてから、答えを見ましょう"));
+      const reveal = el("button", { type: "button", class: "btn block" }, "答えを見る");
+      const slot = el("div");
+      box.append(reveal, slot, result);
+      wrap.append(box, explain);
+      reveal.addEventListener("click", () => {
+        reveal.remove();
+        const alts = (p.alts || []).length ? `<span class="alt">別の書き方：${p.alts.map(esc).join("、")}</span>` : "";
+        slot.appendChild(el("div", { class: "self-ans" }, `<span class="lab">答え</span><span class="fm">${esc(p.a)}</span>${alts}`));
+        slot.appendChild(el("div", { class: "self-q" }, "あなたの答えは合っていましたか？"));
+        const row = el("div", { class: "self-judge" });
+        const o = el("button", { type: "button", class: "sj o" }, "〇　合っていた");
+        const x = el("button", { type: "button", class: "sj x" }, "×　間違えた");
+        const fin = ok => {
+          o.disabled = x.disabled = true;
+          (ok ? o : x).classList.add("picked");
+          if (ok) grade.right("〇　正解として記録しました");
+          else grade.wrong("×　不正解として記録しました");
+        };
+        o.addEventListener("click", () => fin(true));
+        x.addEventListener("click", () => fin(false));
+        row.append(o, x);
+        slot.appendChild(row);
+        setTimeout(() => row.scrollIntoView({ behavior: "smooth", block: "nearest" }), 60);
       });
     }
 
-    (p.type === "fill" ? buildFill : buildChoice)();
+    ({ fill: buildFill, err: buildErr, multi: buildMulti }[p.type] || buildChoice)();
+    app.appendChild(wrap);
 
     // 下部ナビ
     bottomNav.hidden = false;
@@ -503,7 +549,7 @@
       for (let n = 0; n < REVIEW_NEED; n++) pips += `<i class="${n < r.streak ? "on" : ""}"></i>`;
       const b = el("button", { class: "item", "data-st": r.streak > 0 ? "done" : "todo" },
         `<span class="num">${idx + 1}</span>
-         <span style="min-width:0"><span class="item-q">${esc(p.q)}</span>
+         <span style="min-width:0"><span class="item-q">${esc(listQ(p))}</span>
            <span class="item-meta">${unitTag(p)}${typeTag(p)}<span>${dateLabel(r.from)}</span></span></span>
          <span class="pips" aria-label="連続正解 ${r.streak} / ${REVIEW_NEED}">${pips}</span>`);
       b.addEventListener("click", () => showReviewProblem(rows, idx));
