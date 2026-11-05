@@ -360,6 +360,17 @@ input[type=text] { caret-color: var(--accent); }
 .unit-prog b { color: var(--accent); font-size: 1.15rem; }
 .unit-prog .up-ng { color: var(--ng); font-weight: 600; }
 .unit-prog .bar { grid-column: 1 / -1; margin-top: 4px; }
+.unit-prog[hidden] { display: none; }
+
+/* ---------- 検索ボックス ---------- */
+.searchbox { margin: 0 0 14px; }
+.search-input {
+  width: 100%; box-sizing: border-box; height: 46px; padding: 0 14px; border-radius: 12px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--text);
+  font: inherit; font-size: 1rem; -webkit-appearance: none; appearance: none;
+}
+.search-input::placeholder { color: var(--faint, var(--muted)); }
+.search-input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
 .ttag { font-size: .7rem; font-weight: 600; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
 .test-head { margin: 4px 0 14px; }
 .test-head .date { font-weight: 700; font-size: 1.05rem; }

@@ -132,6 +132,32 @@
   }
   const unitTag = p => `<span class="utag u-${p.unit}">${esc(UNIT_LABEL[p.unit])}</span>`;
   const typeTag = p => `<span class="ttag">${TYPE_LABEL[p.type] || ""}</span>`;
+
+  // ---------- 検索 ----------
+  // 全角半角・大文字小文字・空白・中点・添字(H₂SO₄ と H2SO4)の違いを無視して照合する。空白で区切ると AND 検索。
+  const normQ = s => String(s).normalize("NFKC").toLowerCase().replace(/[\s·・{}]/g, "");
+  const SEARCH = {};
+  function searchText(p) {
+    if (SEARCH[p.id] === undefined) {
+      const parts = [UNIT_LABEL[p.unit], TYPE_LABEL[p.type], p.title, p.q, p.text, p.a, p.fix, p.exp]
+        .concat(p.d || [], p.alts || [], (p.stmts || []).reduce((a, s) => a.concat([s.t, s.note]), []));
+      SEARCH[p.id] = normQ(parts.filter(Boolean).join("|"));
+    }
+    return SEARCH[p.id];
+  }
+  const parseQuery = s => String(s).split(/[\s　]+/).map(normQ).filter(Boolean);
+  const matchQuery = (p, terms) => { const t = searchText(p); return terms.every(w => t.includes(w)); };
+  // 検索ボックス。変換中(IME)は絞り込まず、確定してから反映する
+  function searchBox(value, onChange) {
+    const box = el("div", { class: "searchbox" });
+    const input = el("input", { type: "search", class: "search-input", placeholder: "キーワードで検索(例: 硫酸、Cu、赤褐色)", "aria-label": "問題をキーワードで検索", autocomplete: "off", autocapitalize: "off", spellcheck: "false", enterkeyhint: "search" });
+    input.value = value;
+    input.addEventListener("input", e => { if (!e.isComposing) onChange(input.value); });
+    input.addEventListener("compositionend", () => onChange(input.value));
+    input.addEventListener("keydown", e => { if (e.key === "Enter") input.blur(); });
+    box.appendChild(input);
+    return box;
+  }
   function begin() {
     updateSummary();
     bottomNav.hidden = true;
@@ -154,24 +180,30 @@
   let curUnit = UNITS[0].key;
   let stFilter = "all";   // all / todo / ng / done
   let tyFilter = "all";   // all / choice / color / fill
+  let uq = "";            // 分野別の検索語(画面を移っても保持する)
+  let rq = "";            // 復習リストの検索語
   function showUnits() {
     mode = "units";
     const wrap = begin();
 
     const chips = el("div", { class: "filters unit-chips", role: "group", "aria-label": "分野を選ぶ" });
+    const chipBtns = [];
     UNITS.forEach(u => {
       const s = statOf(UNIT_IDS[u.key]);
-      const b = el("button", { class: "filter", "aria-pressed": String(curUnit === u.key) }, `${esc(u.label)}<span>${s.done}/${s.total}</span>`);
-      b.addEventListener("click", () => { curUnit = u.key; showUnits(); });
+      const b = el("button", { class: "filter", "aria-pressed": "false" }, `${esc(u.label)}<span>${s.done}/${s.total}</span>`);
+      b.addEventListener("click", () => { curUnit = u.key; uq = ""; showUnits(); }); // 分野を選ぶと検索は解除
+      chipBtns.push([u.key, b]);
       chips.appendChild(b);
     });
     wrap.appendChild(chips);
+    wrap.appendChild(searchBox(uq, v => { uq = v; applyQuery(); }));
 
     const ids = UNIT_IDS[curUnit];
     const s = statOf(ids);
-    wrap.appendChild(el("div", { class: "unit-prog" },
+    const progBox = el("div", { class: "unit-prog" },
       `<span><b>${s.done}</b> / ${s.total} 問 正解済み</span><span class="up-ng">${s.ng ? `不正解 ${s.ng}` : ""}</span>
-       <div class="bar"><i style="width:${s.done / s.total * 100}%"></i></div>`));
+       <div class="bar"><i style="width:${s.done / s.total * 100}%"></i></div>`);
+    wrap.appendChild(progBox);
 
     function filterRow(label, opts, get, set) {
       const row = el("div", { class: "filters sub", role: "group", "aria-label": label });
@@ -185,23 +217,40 @@
     filterRow("結果で絞り込む", [["all", "すべて"], ["todo", "未回答"], ["ng", "不正解"], ["done", "正解済み"]], () => stFilter, v => { stFilter = v; });
     filterRow("形式で絞り込む", [["all", "全形式"], ["fill", "化学式"], ["color", "色"], ["elem", "元素"], ["err", "誤り探し"], ["multi", "全て選べ"], ["choice", "4択"]], () => tyFilter, v => { tyFilter = v; });
 
-    const rows = ids.map((id, i) => ({ p: BY_ID[id], i })).filter(({ p }) => {
-      const st = prog[p.id];
-      if (stFilter === "todo" && st) return false;
-      if (stFilter === "ng" && st !== "peek") return false;
-      if (stFilter === "done" && st !== "done") return false;
-      if (tyFilter !== "all" && p.type !== tyFilter) return false;
-      return true;
-    });
-    wrap.appendChild(el("div", { class: "section-label" }, `${esc(UNIT_LABEL[curUnit])}　${rows.length} 問`));
-    if (!rows.length) wrap.appendChild(el("div", { class: "empty" }, "条件に合う問題はありません。"));
-    const list = el("div", { class: "list" });
-    rows.forEach(({ p, i }, k) => {
-      const b = rowButton(i + 1, p, prog[p.id], typeTag(p));
-      b.addEventListener("click", () => showUnitProblem(rows.map(r => r.p), k));
-      list.appendChild(b);
-    });
-    wrap.appendChild(list);
+    // 一覧部分。検索中は全分野から探し(分野の選択は無視)、結果・形式の絞り込みとは併用する
+    const listBox = el("div");
+    wrap.appendChild(listBox);
+    function renderRows() {
+      const terms = parseQuery(uq);
+      const searching = terms.length > 0;
+      const pool = searching ? BANK.map(p => p.id) : ids;
+      const rows = pool.map((id, i) => ({ p: BY_ID[id], i })).filter(({ p }) => {
+        const st = prog[p.id];
+        if (stFilter === "todo" && st) return false;
+        if (stFilter === "ng" && st !== "peek") return false;
+        if (stFilter === "done" && st !== "done") return false;
+        if (tyFilter !== "all" && p.type !== tyFilter) return false;
+        if (searching && !matchQuery(p, terms)) return false;
+        return true;
+      });
+      listBox.replaceChildren();
+      listBox.appendChild(el("div", { class: "section-label" }, searching ? `検索結果（全分野）　${rows.length} 問` : `${esc(UNIT_LABEL[curUnit])}　${rows.length} 問`));
+      if (!rows.length) listBox.appendChild(el("div", { class: "empty" }, searching ? "該当する問題はありません。" : "条件に合う問題はありません。"));
+      const list = el("div", { class: "list" });
+      rows.forEach(({ p, i }, k) => {
+        const b = rowButton(searching ? k + 1 : i + 1, p, prog[p.id], (searching ? unitTag(p) : "") + typeTag(p));
+        b.addEventListener("click", () => showUnitProblem(rows.map(r => r.p), k));
+        list.appendChild(b);
+      });
+      listBox.appendChild(list);
+    }
+    function applyQuery() {
+      const searching = parseQuery(uq).length > 0;
+      chipBtns.forEach(([key, b]) => b.setAttribute("aria-pressed", String(!searching && key === curUnit)));
+      progBox.hidden = searching;
+      renderRows();
+    }
+    applyQuery();
 
     const foot = el("div", { class: "list-foot" });
     const reset = el("button", { class: "link" }, "記録をリセット");
@@ -538,11 +587,18 @@
       wrap.appendChild(chips);
     }
 
-    const rows = reviewFilter === "all" ? all : all.filter(r => BY_ID[r.id].unit === reviewFilter);
-    wrap.appendChild(el("div", { class: "section-label" }, `間違えた問題　${REVIEW_NEED}回連続で正解すると外れます`));
-    if (!rows.length) wrap.appendChild(el("div", { class: "empty" }, all.length ? "この分野の問題はありません。" : "復習する問題はありません。間違えた問題は自動でここにたまります。"));
-    const list = el("div", { class: "list" });
-    rows.forEach((r, idx) => {
+    // 検索は分野の絞り込みと併用する(検索ボックスは問題が1問でもあれば出す)
+    const listBox = el("div");
+    if (all.length) wrap.appendChild(searchBox(rq, v => { rq = v; renderRows(); }));
+    wrap.appendChild(listBox);
+    function renderRows() {
+      const terms = parseQuery(rq);
+      const rows = all.filter(r => (reviewFilter === "all" || BY_ID[r.id].unit === reviewFilter) && (!terms.length || matchQuery(BY_ID[r.id], terms)));
+      listBox.replaceChildren();
+      listBox.appendChild(el("div", { class: "section-label" }, terms.length ? `検索結果　${rows.length} 問` : `間違えた問題　${REVIEW_NEED}回連続で正解すると外れます`));
+      if (!rows.length) listBox.appendChild(el("div", { class: "empty" }, !all.length ? "復習する問題はありません。間違えた問題は自動でここにたまります。" : terms.length ? "該当する問題はありません。" : "この分野の問題はありません。"));
+      const list = el("div", { class: "list" });
+      rows.forEach((r, idx) => {
       const p = BY_ID[r.id];
       const row = el("div", { class: "rv-row" });
       let pips = "";
@@ -557,8 +613,10 @@
       del.addEventListener("click", () => { if (confirm("この問題を復習リストから外しますか？")) { reviewRemove(r.id); showReview(); } });
       row.append(b, del);
       list.appendChild(row);
-    });
-    wrap.appendChild(list);
+      });
+      listBox.appendChild(list);
+    }
+    renderRows();
     app.appendChild(wrap);
   }
 
